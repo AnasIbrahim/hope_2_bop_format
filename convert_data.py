@@ -26,15 +26,21 @@ for i in range(len(obj_ordered_list)):
 # all images are 640x480
 width, height = 640, 480
 
+# make open3d Scene, to help generating depth images and masks
+vis = o3d.visualization.Visualizer()
+vis.create_window(width=width, height=height, top=0, left=0, visible=False)
+ctr = vis.get_view_control()
+
 # iterate over each of the 10 scenes
 for scene_num in range(10):
+    print(f'Processing scene {scene_num}')
     old_scene_path = os.path.join(old_format_path, 'hope_video_scene_' + f'{scene_num:04}')
-    bop_scene_path = os.path.join(bop_format_save_path, f'{scene_num:06}')
-    # make folders rgb, depth, mask, mask_vis
+    bop_scene_path = os.path.join(bop_format_save_path, f'{scene_num+1:06}')  # start counting scenes from 1
+    # make folders rgb, depth, mask, mask_visib
     os.makedirs(os.path.join(bop_scene_path, 'rgb'), exist_ok=True)
     os.makedirs(os.path.join(bop_scene_path, 'depth'), exist_ok=True)
     os.makedirs(os.path.join(bop_scene_path, 'mask'), exist_ok=True)
-    os.makedirs(os.path.join(bop_scene_path, 'mask_vis'), exist_ok=True)
+    os.makedirs(os.path.join(bop_scene_path, 'mask_visib'), exist_ok=True)
     # define json files data
     scene_camera = {}
     scene_gt = {}
@@ -42,7 +48,7 @@ for scene_num in range(10):
 
     num_of_frames = glob.glob(os.path.join(old_scene_path, '*.jpg'))
     # iterate over each frame
-    for frame_num in range(len(num_of_frames)):
+    for frame_num in tqdm(range(len(num_of_frames))):
         # copy rgb image to bop folder
         old_rgb_frame = os.path.join(old_scene_path, f'{frame_num:04}_rgb.jpg')
         bop_rgb_frame = os.path.join(bop_scene_path, 'rgb', f'{frame_num:06}.jpg')
@@ -71,7 +77,7 @@ for scene_num in range(10):
         camera_intrinsics = np.array(camera_intrinsics).reshape(3,3)
         # make scene_camera (extrinsics, intrinsics)
         frame_cam = {}
-        frame_cam["cam_k"] = camera_intrinsics.flatten().tolist()
+        frame_cam["cam_K"] = camera_intrinsics.flatten().tolist()
         frame_cam["depth_scale"] = 1.0
         translation = camera_extrinsics_w2c[:3, 3]
         rotation = camera_extrinsics_w2c[:3, :3]
@@ -137,11 +143,6 @@ for scene_num in range(10):
         #o3d.visualization.draw_geometries(objects_visualize + [frame_pcd, origin_mesh_frame, camera_mesh_frame])
         # ==============================================================================================================
 
-        # make open3d Scene, to help generating depth images and masks
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(width=width, height=height, top=0, left=0, visible=True)
-        ctr = vis.get_view_control()
-
         # add any of the objects just for testing
         #vis.add_geometry(frame_pcd, reset_bounding_box=True)
         #vis.poll_events()
@@ -194,9 +195,9 @@ for scene_num in range(10):
         # remove all objects from the scene
         vis.clear_geometries()
 
-        # generate mask and mask_vis for each object in frame_gt
+        # generate mask and mask_visib for each object in frame_gt
         frame_masks = []
-        frame_masks_vis = []
+        frame_masks_visib = []
         for anno_id in range(len(frame_gt)):
             # add object to scene
             obj_id = frame_gt[anno_id]["obj_id"]
@@ -212,22 +213,24 @@ for scene_num in range(10):
             # generate mask
             mask = np.zeros((height, width))
             mask[fake_obj_depth_image > 0] = 255
+            mask = mask.astype(np.uint8)
             # save mask
             mask_file = os.path.join(bop_scene_path, 'mask', f'{frame_num:06}_{anno_id:06}.png')
             cv2.imwrite(mask_file, mask)
             # append mask to frame_masks
             frame_masks.append(mask)
 
-            # generate mask_vis
+            # generate mask_visib
             # the mask are the equal pixels values between the fake_all_objs_depth_image and the fake_obj_depth_image
             # mask the image after that with the mask (the visible mask) to remove the background
             equal_mask = np.equal(fake_all_objs_depth_image, fake_obj_depth_image)
-            mask_vis = equal_mask.astype(np.uint8) * mask
-            # save mask_vis
-            mask_vis_file = os.path.join(bop_scene_path, 'mask_vis', f'{frame_num:06}_{anno_id:06}.png')
-            cv2.imwrite(mask_vis_file, mask_vis)
-            # append mask_vis to frame_masks_vis
-            frame_masks_vis.append(mask_vis)
+            mask_visib = equal_mask.astype(np.uint8) * mask
+            mask_visib = mask_visib.astype(np.uint8)
+            # save mask_visib
+            mask_visib_file = os.path.join(bop_scene_path, 'mask_visib', f'{frame_num:06}_{anno_id:06}.png')
+            cv2.imwrite(mask_visib_file, mask_visib)
+            # append mask_visib to frame_masks_visib
+            frame_masks_visib.append(mask_visib)
 
             # remove object from scene
             vis.clear_geometries()
@@ -238,19 +241,21 @@ for scene_num in range(10):
         for anno_id in range(len(frame_masks)):
             frame_obj_info = {}
             # get bounding box of mask
-            bbox = list(cv2.boundingRect(frame_masks[anno_id]))
+            bbox = list(cv2.boundingRect(frame_masks[anno_id].astype(np.uint8)))
             frame_obj_info["bbox_obj"] = bbox
-            # get bounding box of mask_vis
-            bbox_vis = list(cv2.boundingRect(frame_masks_vis[anno_id]))
+            # get bounding box of mask_visib
+            bbox_vis = list(cv2.boundingRect(frame_masks_visib[anno_id]))
             frame_obj_info["bbox_visib"] = bbox_vis
             # get number of pixels in mask
             frame_obj_info["px_count_all"] = np.sum(frame_masks[anno_id] > 0)
-            # get numer of pixels in mask_vis
-            frame_obj_info["px_count_visib"] = np.sum(frame_masks_vis[anno_id] > 0)
-            # get fraction of pixels in mask_vis
+            # get numer of pixels in mask_visib
+            frame_obj_info["px_count_visib"] = np.sum(frame_masks_visib[anno_id] > 0)
+            # get fraction of pixels in mask_visib
             frame_obj_info["visib_fract"] = frame_obj_info["px_count_visib"] / frame_obj_info["px_count_all"]
-            # get number of non-zero pixels in mask_vis over imposed on frame original depth image
-            frame_obj_info["px_count_valid"] = np.sum(np.logical_and(frame_masks_vis[anno_id], frame_depth_image > 0))
+            # get number of non-zero pixels in mask_visib over imposed on frame original depth image
+            frame_obj_info["px_count_valid"] = np.sum(np.logical_and(frame_masks_visib[anno_id], frame_depth_image > 0))
+            # append frame_obj_info to frame_gt_info
+            frame_gt_info.append(frame_obj_info)
 
     # save scene_camera
     scene_camera_file = os.path.join(bop_scene_path, 'scene_camera.json')
